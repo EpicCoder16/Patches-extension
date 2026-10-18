@@ -3,12 +3,16 @@
 // Patches — floating launcher (content script).
 //
 // A small, isolated shadow-DOM button on the right edge of the page, styled in
-// the light sage-green brand palette. Clicking it asks the background service
-// worker to TOGGLE Chrome's native side panel (open, or close if already
-// open — the worker tracks authoritative state via sidePanel.onOpened/
-// onClosed). The webpage reflows around the open panel instead of being
-// covered. Message passing from this click carries the required user-gesture
-// context into the worker. The launcher is always visible on supported pages.
+// the light sage-green brand palette. Clicking it TOGGLES Chrome's native
+// side panel. GESTURE-CRITICAL: chrome.sidePanel.open() keeps the click's
+// user-gesture context only when it is the first extension call on the
+// message path, so THIS script reads the persisted open state directly from
+// chrome.storage (no gesture cost) and commands the worker with
+// 'open-side-panel' or 'close-side-panel' — the worker then calls open()
+// immediately. When a close attempt reveals the panel was already closed
+// (stale tracked state), the worker answers 'corrected' and this script
+// re-requests an open within the same click's gesture. The webpage reflows
+// around the open panel; the launcher is always visible on supported pages.
 
 (function () {
   const protocol = (location.protocol || '').toLowerCase();
@@ -79,22 +83,47 @@
   launcherRoot.appendChild(launcherStyle);
   launcherRoot.appendChild(launcherBtn);
 
-  launcherBtn.addEventListener('click', () => {
-    let contextInvalidated = false;
+  function sendPanelMessage(type) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type }, (response) => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+          resolve(response || { ok: false, error: 'No response from background worker.' });
+        });
+      } catch {
+        // Extension context invalidated (reload mid-click) — nothing to do.
+        resolve({ ok: false, error: 'Extension context invalidated.' });
+      }
+    });
+  }
+
+  launcherBtn.addEventListener('click', async () => {
     try {
-      if (!chrome.runtime || !chrome.runtime.id) contextInvalidated = true;
+      if (!chrome.runtime || !chrome.runtime.id) return;
     } catch {
-      contextInvalidated = true;
+      return; // extension was reloaded — nothing to do
     }
-    if (contextInvalidated) return;
-    // Message from this click carries the Chrome-required user-gesture context;
-    // the service worker opens or closes chrome.sidePanel for this tab.
+    // Decide the toggle intent HERE, in the page: reading storage in the
+    // content script costs nothing from the click's user-gesture budget. The
+    // worker's 'open-side-panel' handler must call chrome.sidePanel.open()
+    // as its first extension call, or Chrome rejects it.
+    let believeOpen = false;
     try {
-      chrome.runtime.sendMessage({ type: 'toggle-side-panel' }, () => {
-        void chrome.runtime.lastError; // worker asleep or panel already open — Chrome owns this
-      });
+      const stored = await chrome.storage.local.get('panelOpen');
+      believeOpen = Boolean(stored.panelOpen && stored.panelOpen.open);
     } catch {
-      // Extension context iterating (reload mid-click) — nothing to do.
+      believeOpen = false; // storage hiccup → safest is the open path
+    }
+    const requested = believeOpen ? 'close-side-panel' : 'open-side-panel';
+    const res = await sendPanelMessage(requested);
+    if (res && res.ok && res.action === 'corrected' && requested === 'close-side-panel') {
+      // The panel was NOT actually open (stale tracked state — e.g. the user
+      // closed it via Chrome's ✕ while the state said open). The click's
+      // gesture is still alive, so immediately open as the user expects.
+      await sendPanelMessage('open-side-panel');
     }
   });
 

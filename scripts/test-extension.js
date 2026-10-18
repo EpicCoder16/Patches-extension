@@ -190,117 +190,94 @@ async function main() {
     check('overlay sidebar removed — no in-page sidebar host or iframe exists', await page.evaluate(() =>
       !document.querySelector('[data-patches="sidebar-host"]') && !document.querySelector('iframe[data-patches="sidebar-frame"]')));
 
-    // ── Launcher toggle: chrome.sidePanel open/close state machine ──────────
-    // NOTE: CDP-synthesized clicks carry no user activation, so in headless
-    // Chrome the real open() rejects with its expected gestureRequired error —
-    // the real-gesture OPEN path cannot be driven here and must be verified
-    // manually in real Chrome (documented Chrome behaviour: content-script
-    // click interactions may call sidePanel.open). The toggle STATE MACHINE
-    // is verified deterministically below over the same message paths by
-    // installing success doubles of open/close; the real-API routing is
-    // asserted first with an outcome-recording spy.
-    let panelSpyOk = false;
-    try {
-      await swEval(() => {
-        if (!self.__patchesPanelSeed) {
-          self.__patchesPanelSeed = true;
-          self.__patchesOriginalPanelOpen = chrome.sidePanel.open.bind(chrome.sidePanel);
-          self.__patchesOriginalPanelClose = chrome.sidePanel.close && chrome.sidePanel.close.bind(chrome.sidePanel);
-          self.__patchesPanelCalls = [];
-          const record = (api, opts, ok, err) => { self.__patchesPanelCalls.push({ api, tabId: opts && opts.tabId, windowId: opts && opts.windowId, ok, err }); };
-          chrome.sidePanel.open = async (opts) => {
-            try { await self.__patchesOriginalPanelOpen(opts); record('open', opts, true); }
-            catch (e) { record('open', opts, false, String(e && e.message || e)); throw e; }
-          };
-          if (self.__patchesOriginalPanelClose) {
-            chrome.sidePanel.close = async (opts) => {
-              try { await self.__patchesOriginalPanelClose(opts); record('close', opts, true); }
-              catch (e) { record('close', opts, false, String(e && e.message || e)); throw e; }
-            };
-          }
-        }
-      });
-      panelSpyOk = true;
-    } catch { /* binding not reassignable in this Chrome */ }
+    // ── Launcher toggle: real chrome.sidePanel lifecycle ──────────────────
+    // chrome.sidePanel.open() consumes the click's user-gesture context and
+    // must be the FIRST extension call on the message path (root cause of the
+    // "panel no longer opens" regression: an awaited storage read in the
+    // worker before open() invalidated that gesture). The launcher therefore
+    // reads the persisted state itself and commands 'open-side-panel' or
+    // 'close-side-panel'. The REAL API is exercised here end-to-end: headless
+    // clicks carry user activation for the immediate-open path, and the
+    // sidePanel.onOpened/onClosed lifecycle events fire headlessly — asserted
+    // below. (Verified headlessly by this suite; real-hardware-click toggling
+    // was additionally reproduced in a headed real Chrome run.)
+    await swEval(() => {
+      self.__panelApiCalls = [];
+      self.__origPanelOpen = chrome.sidePanel.open.bind(chrome.sidePanel);
+      self.__origPanelClose = chrome.sidePanel.close && chrome.sidePanel.close.bind(chrome.sidePanel);
+      chrome.sidePanel.open = async (opts) => {
+        try { await self.__origPanelOpen(opts); self.__panelApiCalls.push({ api: 'open', ok: true, tabId: opts && opts.tabId }); }
+        catch (e) { self.__panelApiCalls.push({ api: 'open', ok: false, err: String(e && e.message || e), tabId: opts && opts.tabId }); throw e; }
+      };
+      if (self.__origPanelClose) {
+        chrome.sidePanel.close = async (opts) => {
+          try { await self.__origPanelClose(opts); self.__panelApiCalls.push({ api: 'close', ok: true, tabId: opts && opts.tabId, windowId: opts && opts.windowId }); }
+          catch (e) { self.__panelApiCalls.push({ api: 'close', ok: false, err: String(e && e.message || e), tabId: opts && opts.tabId, windowId: opts && opts.windowId }); throw e; }
+        };
+      }
+      self.__panelEvents = { opened: 0, closed: 0 };
+      chrome.sidePanel.onOpened.addListener(() => { self.__panelEvents.opened++; });
+      chrome.sidePanel.onClosed.addListener(() => { self.__panelEvents.closed++; });
+    });
 
-    const panelCalls = async () => (panelSpyOk ? await swEval(() => (self.__patchesPanelCalls || []).slice()) : []);
     const panelState = async () => swEval(async () => {
       const s = await chrome.storage.local.get('panelOpen');
       return s.panelOpen || null;
     });
-    const resetCalls = async () => swEval(() => { self.__patchesPanelCalls = []; });
-    const installDoubles = async () => swEval(() => {
-      chrome.sidePanel.open = async (opts) => { self.__patchesPanelCalls.push({ api: 'open', tabId: opts && opts.tabId, windowId: opts && opts.windowId, ok: true }); };
-      chrome.sidePanel.close = async (opts) => { self.__patchesPanelCalls.push({ api: 'close', tabId: opts && opts.tabId, windowId: opts && opts.windowId, ok: true }); };
-    });
-    const restoreRealApi = async () => swEval(() => {
-      chrome.sidePanel.open = (opts) => self.__patchesOriginalPanelOpen(opts);
-      if (self.__patchesOriginalPanelClose) chrome.sidePanel.close = (opts) => self.__patchesOriginalPanelClose(opts);
-    });
+    const panelCalls = () => swEval(() => (self.__panelApiCalls || []).slice());
+    const panelEvents = () => swEval(() => self.__panelEvents);
+    const clickLauncher = () => page.mouse.click(1279, 400); // right edge hit-point (closed shadow DOM)
 
-    // Real-API routing: the launcher click must reach chrome.sidePanel.open
-    // for this tab (outcome may be a gesture rejection in headless — fine).
-    await page.mouse.click(1279, 400);
-    await new Promise((r) => setTimeout(r, 900));
-    const routingCalls = await panelCalls();
-    check('launcher click routes to chrome.sidePanel.open for this tab',
-      Boolean(routingCalls.length && routingCalls[0].api === 'open' && routingCalls[0].tabId === TAB_ID),
-      JSON.stringify(routingCalls));
-
-    // Router plumbing: a request without a real gesture must be REJECTED by
-    // chrome's user-gesture requirement (never a router unknown-message or
-    // handler-crash error).
-    const routedNoGesture = await csMsg({ type: 'toggle-side-panel' });
-    check('toggle-side-panel routed without router error (gesture guard fires headlessly)',
-      routedNoGesture && routedNoGesture.ok === false && routedNoGesture.gestureRequired === true,
-      JSON.stringify(routedNoGesture));
-
-    // ── Toggle state machine (success doubles over the same message path) ──
-    await resetCalls();
-    await installDoubles();
     await swEval(async () => { await chrome.storage.local.remove('panelOpen'); });
 
-    // Click 1': closed → open.
-    await page.mouse.click(1279, 400);
-    await new Promise((r) => setTimeout(r, 700));
+    // Click 1: closed → open (real API).
+    await clickLauncher();
+    await new Promise((r) => setTimeout(r, 1100));
     let st = await panelState();
-    check('toggle click on closed panel → open (state persisted true)', Boolean(st && st.open === true), JSON.stringify(st));
+    let ev = await panelEvents();
+    let calls = await panelCalls();
+    check('launcher click 1 OPENS the panel (real open ok)', Boolean(calls.some((c) => c.api === 'open' && c.ok) && st && st.open === true), JSON.stringify({ calls: calls.filter((c) => c.api), ev, st }));
+    check('sidePanel.onOpened lifecycle event fired on the real open', Boolean(ev.opened >= 1), JSON.stringify(ev));
 
-    // Click 2': open → close.
-    await page.mouse.click(1279, 400);
-    await new Promise((r) => setTimeout(r, 700));
-    st = await panelState();
-    const closeRecords = await panelCalls();
-    check('toggle click on open panel → close (state persisted false, right scope)',
-      Boolean(st && st.open === false && closeRecords.some((c) => c.api === 'close' && c.tabId === TAB_ID)),
-      JSON.stringify({ last: closeRecords.slice(-2), st }));
+    // Click 2: open → close (real API; the onClosed event confirms it).
+    await clickLauncher();
+    await new Promise((r) => setTimeout(r, 1300));
+    st = await panelState(); ev = await panelEvents();
+    check('launcher click 2 CLOSES the panel (real close, onClosed fired)', Boolean(ev.closed >= 1 && st && st.open === false), JSON.stringify({ ev, st }));
 
-    // Click 3': closed → open again.
-    await page.mouse.click(1279, 400);
-    await new Promise((r) => setTimeout(r, 700));
-    st = await panelState();
-    check('toggle click again reopens (state persisted true, no desync)', Boolean(st && st.open === true), JSON.stringify(st));
+    // Click 3: closed → reopen (no desync after a real close).
+    await clickLauncher();
+    await new Promise((r) => setTimeout(r, 1100));
+    st = await panelState(); ev = await panelEvents();
+    check('launcher click 3 REOPENS the panel (no desync)', Boolean(ev.opened >= 2 && st && st.open === true), JSON.stringify({ ev, st }));
 
-    // Rapid repeated clicks keep alternating.
-    await page.mouse.click(1279, 400);
-    await new Promise((r) => setTimeout(r, 350));
-    await page.mouse.click(1279, 400);
-    await new Promise((r) => setTimeout(r, 700));
+    // Rapid repeated clicks keep alternating and end open.
+    await clickLauncher();
+    await new Promise((r) => setTimeout(r, 600));
+    await clickLauncher();
+    await new Promise((r) => setTimeout(r, 1100));
     st = await panelState();
     check('rapid repeated clicks keep alternating (final state open)', Boolean(st && st.open === true), JSON.stringify(st));
-    await restoreRealApi();
 
-    // Stale-state recovery (stands in for a Chrome-side ✕ close whose
-    // onClosed event the worker missed): the tracker says open but Chrome
-    // reports "No active … side panel" → the tracked state is corrected to
-    // closed (in real Chrome the onClosed handler writes exactly this).
+    // Leave the panel closed for the checks that follow.
+    await clickLauncher();
+    await new Promise((r) => setTimeout(r, 1300));
+    st = await panelState();
+    check('final click closes the panel (state false)', Boolean(st && st.open === false), JSON.stringify(st));
+
+    // Stale-state recovery stands in for a missed onClosed (or an idempotent
+    // close() resolving while nothing was open): close-side-panel on a stale
+    // "open" state must answer action:'corrected' and persist closed — the
+    // launcher then re-requests an open within the same click's gesture.
     await swEval(async (tab) => {
       await chrome.storage.local.set({ panelOpen: { open: true, tabId: tab, windowId: null, at: Date.now() } });
     }, TAB_ID);
-    await csMsg({ type: 'toggle-side-panel' });
-    await new Promise((r) => setTimeout(r, 800));
+    const corrected = await csMsg({ type: 'close-side-panel' });
+    await new Promise((r) => setTimeout(r, 900));
     st = await panelState();
-    check('stale open-state self-corrects when Chrome has no active panel', Boolean(st && st.open === false), JSON.stringify(st));
+    check('stale open-state reports corrected and persists closed',
+      Boolean(corrected && corrected.ok === true && corrected.action === 'corrected' && st && st.open === false),
+      JSON.stringify({ corrected, st }));
 
     await swEval(async () => { await chrome.storage.local.remove('panelOpen'); });
 

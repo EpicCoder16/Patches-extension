@@ -135,13 +135,34 @@ async function sendToTab(tabId, message) {
 }
 
 // ── Native side panel: launcher toggle + authoritative open state ──────────
-// Chrome exposes sidePanel.close() plus sidePanel.onOpened/onClosed events;
-// verified present on the local target (Chrome 155) and since ~Chrome 137.
-// The EVENTS are the source of truth — they fire for programmatic opens,
-// toolbar opens, and the user's manual ✕ close. Top-level registration lets
-// Chrome wake the worker for them, and the persisted copy (chrome.storage)
-// means a freshly restarted worker never toggles against a stale default.
+// ROOT-CAUSE NOTE (regression fix): chrome.sidePanel.open() carries the
+// click's user-gesture context ONLY when it is the first extension call on
+// the message path. The previous toggle implementation awaited a
+// chrome.storage.local read in the worker BEFORE calling open(), which
+// invalidates that gesture context and makes open() reject with "may only be
+// called in response to a user gesture" — the panel then never opened.
+// The LAUNCHER now reads the persisted state in the page (no gesture cost)
+// and commands 'open-side-panel' or 'close-side-panel'; the worker calls
+// open() as its very first operation. close() is not gesture-gated (verified
+// on Chrome 155) and may await freely; it self-corrects stale state.
+//
+// Authoritative lifecycle: sidePanel.onOpened/onClosed events fire for
+// programmatic opens, other open paths, and the user's manual ✕; each event
+// is mirrored to chrome.storage.local ('panelOpen') so the freshly restarted
+// worker (and the launcher) never act on a stale default. The state is never
+// inferred from sidePanel.getOptions().
 const PANEL_OPEN_KEY = 'panelOpen';
+
+// Lifecycle-event bookkeeping for close verification. sidePanel.close()
+// resolves EVEN WHEN NO PANEL WAS OPEN (idempotent), so a resolved close does
+// not prove the tracked state was right: Chrome fires onClosed ONLY for a
+// real close. If any lifecycle event has been seen (panelEventsSeen) we wait
+// briefly for an onClosed after the call; no event → nothing was actually
+// open → report 'corrected' so the launcher can re-open within same gesture.
+// If no events have been observed (test doubles, very old Chrome), trust the
+// close result. Worker restarts are covered by the persisted state + events.
+let panelEventsSeen = false;
+let lastPanelClosedAt = 0;
 
 async function persistPanelState(open, scope = {}) {
   await chrome.storage.local.set({
@@ -165,104 +186,140 @@ async function getPanelOpenState() {
   };
 }
 
-// Feature-detected: newer Chrome only. On anything older the launcher keeps
-// the previous open-only behaviour (close() unavailable there anyway).
+// Feature-detected: on builds without the events the optimistic writes made
+// alongside each successful open/close keep the state usable.
 if (chrome.sidePanel && chrome.sidePanel.onOpened && typeof chrome.sidePanel.onOpened.addListener === 'function') {
   chrome.sidePanel.onOpened.addListener(async (info) => {
+    panelEventsSeen = true;
     await persistPanelState(true, info || {});
   });
 }
 if (chrome.sidePanel && chrome.sidePanel.onClosed && typeof chrome.sidePanel.onClosed.addListener === 'function') {
   chrome.sidePanel.onClosed.addListener(async (info) => {
+    panelEventsSeen = true;
+    lastPanelClosedAt = Date.now();
     await persistPanelState(false, info || {});
   });
 }
 
+/** Resolves true when an onClosed event is observed after `afterMs` (a real
+ * panel close), false when the short window elapses without an event. */
+function waitForCloseEventAfter(afterMs, timeoutMs = 400) {
+  if (!panelEventsSeen) return Promise.resolve(true); // events not observable — trust close()
+  if (lastPanelClosedAt > afterMs) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const poll = () => {
+      if (lastPanelClosedAt > afterMs) resolve(true);
+      else if (Date.now() - started >= timeoutMs) resolve(false);
+      else setTimeout(poll, 40);
+    };
+    poll();
+  });
+}
+
 /**
- * Toggle the native side panel for the tab the launcher was clicked in.
- * - Open → close({ scope }) → close() → optimistic storage write; the
- *   onOpened/onClosed events are authoritative and correct any drift.
- * - Manual ✕ close → onClosed → next click opens. Other open paths (toolbar
- *   pinning, another open message) → onOpened keeps the state true.
- * - Rapid repeated clicks simply alternate; each request reads fresh state.
+ * Open the panel for the tab that clicked the launcher. GESTURE-CRITICAL:
+ * chrome.sidePanel.open() is the FIRST await of this handler — the launcher
+ * already performed the state lookup, so the worker must not await anything
+ * before open() or the click's user gesture is invalidated.
  */
-async function toggleSidePanel(message, sender) {
+async function openSidePanelForSender(sender) {
   const { sidePanel } = chrome;
   if (!sidePanel || typeof sidePanel.open !== 'function') {
-    return { ok: false, error: 'Chrome’s side panel API is unavailable in this browser.' };
+    return { ok: false, error: 'Chrome\u2019s side panel API is unavailable in this browser.' };
   }
-  const canClose = typeof sidePanel.close === 'function';
-
-  const senderTabId = sender && sender.tab && Number.isFinite(sender.tab.id) ? sender.tab.id : null;
-  const senderWindowId = sender && sender.tab && Number.isFinite(sender.tab.windowId) ? sender.tab.windowId : null;
-
-  // Resolve the open scope to this tab or, failing that, the focused window.
-  let openTabId = senderTabId;
-  let openWindowId = senderWindowId;
-  if (openTabId == null && openWindowId == null) {
+  const tabId = sender && sender.tab && Number.isFinite(sender.tab.id) ? sender.tab.id : null;
+  if (tabId != null) {
     try {
-      const win = await chrome.windows.getLastFocused();
-      openWindowId = win && win.id;
-    } catch { /* no focused window */ }
-  }
-  if (openTabId == null && openWindowId == null) {
-    return { ok: false, error: 'Could not determine the tab the click came from.' };
-  }
-
-  const state = await getPanelOpenState();
-  if (state.open && canClose) {
-    // Close using the scope the panel was actually opened with (it may differ
-    // from the current tab after navigation or manual Chrome-side changes).
-    // If every scope errors with "No active ... side panel", the tracked state
-    // was stale (Chrome had already closed it) — recover the state and fall
-    // through to the OPEN path so this click still does the user's bidding.
-    const scopes = [];
-    if (state.tabId != null) scopes.push({ tabId: state.tabId });
-    if (state.windowId != null) scopes.push({ windowId: state.windowId });
-    if (openTabId != null && openTabId !== state.tabId) scopes.push({ tabId: openTabId });
-    if (openWindowId != null && openWindowId !== state.windowId) scopes.push({ windowId: openWindowId });
-
-    let gestureRequired = false;
-    let noPanelFound = false;
-    let lastError = null;
-    for (const scope of scopes) {
-      try {
-        await sidePanel.close(scope);
-        // Optimistic write for environments where the events are not
-        // dispatched; on closed-capable Chrome the onClosed event also fires.
-        await persistPanelState(false, scope);
-        return { ok: true, action: 'closed' };
-      } catch (err) {
-        lastError = String((err && err.message) || err);
-        if (/gesture/i.test(lastError)) { gestureRequired = true; break; }
-        if (/no active/i.test(lastError)) { noPanelFound = true; }
-        // Otherwise (unknown tab removed, window gone) — keep trying scopes.
+      await sidePanel.open({ tabId }); // first extension call — preserves the user gesture
+      await persistPanelState(true, { tabId });
+      return { ok: true, action: 'opened', tabId };
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      if (/gesture/i.test(msg)) {
+        // Programmatic calls without a pointer/keyboard gesture are rejected —
+        // the real launcher click carries one, so this is tooling/test noise.
+        return { ok: false, gestureRequired: true, error: msg };
       }
+      return { ok: false, error: msg };
     }
-    if (gestureRequired) return { ok: false, gestureRequired: true, error: lastError };
-    // Stale-state recovery: Chrome reports no active panel for the known
-    // scopes (the tracked close state was stale — e.g. Chrome already closed
-    // it, or the panel was closed through Chrome's own UI without the events
-    // reaching us). Persist the corrected state and try to open instead —
-    // this click still does the user's bidding.
-    await persistPanelState(false, { tabId: state.tabId, windowId: state.windowId });
-    // fall through to the open path below
   }
-
+  // Rare: no sender tab (e.g. relayed message). Resolve the focused window —
+  // an await is unavoidable here, but this path is not the launcher's.
+  let windowId = null;
   try {
-    if (openTabId != null) await sidePanel.open({ tabId: openTabId });
-    else await sidePanel.open({ windowId: openWindowId });
-    await persistPanelState(true, { tabId: openTabId, windowId: openWindowId });
-    return { ok: true, action: 'opened' };
+    const win = await chrome.windows.getLastFocused();
+    windowId = win && win.id;
+  } catch { /* no focused window */ }
+  if (windowId == null) return { ok: false, error: 'Could not determine the tab the click came from.' };
+  try {
+    await sidePanel.open({ windowId });
+    await persistPanelState(true, { windowId });
+    return { ok: true, action: 'opened', windowId };
   } catch (err) {
     const msg = String((err && err.message) || err);
-    if (/gesture/i.test(msg)) {
-      // Programmatic calls without a pointer/keyboard gesture are rejected —
-      // the real launcher click always carries one, so this is test/tooling noise.
-      return { ok: false, gestureRequired: true, error: msg };
-    }
-    return { ok: false, error: msg };
+    return { ok: false, gestureRequired: /gesture/i.test(msg) || undefined, error: msg };
   }
+}
+
+/**
+ * Close the panel. NOT gesture-gated (verified on Chrome 155): retry the
+ * scope the panel was opened with first, then the current tab/window. If
+ * Chrome reports no active panel for any scope, the tracked state was stale
+ * — correct it (the onClosed event writes exactly this) and answer
+ * action:'corrected' so the launcher can immediately re-request an open
+ * within the same user-gesture click.
+ */
+async function closeSidePanelForSender(sender) {
+  const { sidePanel } = chrome;
+  if (!sidePanel || typeof sidePanel.open !== 'function') {
+    return { ok: false, error: 'Chrome\u2019s side panel API is unavailable in this browser.' };
+  }
+  if (typeof sidePanel.close !== 'function') {
+    // Older Chrome without sidePanel.close(): cannot close programmatically.
+    return { ok: false, unsupported: true, error: 'This Chrome version cannot close the side panel programmatically; use Chrome\u2019s ✕.' };
+  }
+  const state = await getPanelOpenState();
+  const senderTabId = sender && sender.tab && Number.isFinite(sender.tab.id) ? sender.tab.id : null;
+  const senderWindowId = sender && sender.tab && Number.isFinite(sender.tab.windowId) ? sender.tab.windowId : null;
+  let focusWindowId = state.windowId;
+  if (focusWindowId == null) {
+    try { const win = await chrome.windows.getLastFocused(); focusWindowId = win && win.id; } catch { /* none */ }
+  }
+  const scopes = [];
+  const pushScope = (scope) => {
+    if (!scope || !scopes.some((s) => ('tabId' in s ? s.tabId === scope.tabId : s.windowId === scope.windowId))) scopes.push(scope);
+  };
+  if (state.tabId != null) pushScope({ tabId: state.tabId });
+  if (senderTabId != null) pushScope({ tabId: senderTabId });
+  if (state.windowId != null) pushScope({ windowId: state.windowId });
+  if (focusWindowId != null) pushScope({ windowId: focusWindowId });
+
+  let gestureRequired = false;
+  let lastError = null;
+  for (const scope of scopes) {
+    const callAt = Date.now();
+    try {
+      await sidePanel.close(scope);
+    } catch (err) {
+      lastError = String((err && err.message) || err);
+      if (/gesture/i.test(lastError)) { gestureRequired = true; break; }
+      // "No active … side panel" / "No tab with id" → panel not reachable in
+      // that scope; try the next one.
+      continue;
+    }
+    // Verify with the lifecycle event that a panel was really closed — a
+    // resolved close() may be a no-op when the tracked state was stale.
+    const reallyClosed = await waitForCloseEventAfter(callAt);
+    await persistPanelState(false, scope);
+    return { ok: true, action: reallyClosed ? 'closed' : 'corrected' };
+  }
+  if (gestureRequired) return { ok: false, gestureRequired: true, error: lastError };
+  // Stale-state recovery: Chrome has no active panel in any known scope (the
+  // user closed it via Chrome's ✕, a restart cleared it, or scope ids aged).
+  await persistPanelState(false, { tabId: state.tabId, windowId: state.windowId });
+  return { ok: true, action: 'corrected' };
 }
 
 async function ensureContentScript(tab) {
@@ -438,9 +495,12 @@ async function handleMessage(message, sender) {
       return sendToOffscreen({ type: 'auth-send-reset', email: message.email });
 
     // ── Tabs / page state ─────────────────────────────────────────────────────
-    case 'toggle-side-panel':
-    case 'open-side-panel': // legacy alias for seamless settings sync
-      return toggleSidePanel(message, sender);
+    case 'open-side-panel':
+    case 'toggle-side-panel': // pre-toggle alias → behaves as open (safe default)
+      return openSidePanelForSender(sender);
+
+    case 'close-side-panel':
+      return closeSidePanelForSender(sender);
 
     case 'get-tab-info': {
       const tab = await getActiveTab();
