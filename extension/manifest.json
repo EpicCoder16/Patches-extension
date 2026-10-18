@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Patches",
+  "version": "1.1.1",
+  "description": "AI-powered CSS patch injector — reshape any website with plain English.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Patches"
+  },
+  "background": {
+    "service_worker": "background/index.js",
+    "type": "module"
+  },
+  "permissions": ["storage", "activeTab", "scripting", "offscreen"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content/patches-content.js", "content/patchesSidebar.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/icon16.png", "icons/icon32.png", "icons/icon48.png", "icons/icon128.png", "sidebar/*"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ]
+}

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Patches</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="popup">
+    <!-- ── Header ────────────────────────────────────────────────────────── -->
+    <header id="popup-header">
+      <div id="brand-row">
+        <img id="logo" src="/icons/icon32.png" alt="Patches" />
+        <div id="brand-text">
+          <h1>Patches</h1>
+          <span id="domain-badge" title="">No site</span>
+        </div>
+      </div>
+      <div id="header-actions">
+        <span id="user-chip" class="hidden" title="Signed in"><span class="dot"></span><span id="user-email"></span></span>
+        <label id="patch-toggle-wrap" title="Enable or disable all patches">
+          <input type="checkbox" id="patch-toggle" checked />
+          <span id="patch-toggle-ui" aria-hidden="true"></span>
+        </label>
+        <button type="button" id="btn-settings" class="icon-btn" title="Settings — API key, model">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 1.75v1.3M7 10.95v1.3M2.95 3.05l.92.92M10.13 10.23l.92.92M1.75 7h1.3M10.95 7h1.3M2.95 10.95l.92-.92M10.13 3.77l.92-.92" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            <circle cx="7" cy="7" r="2.15" stroke="currentColor" stroke-width="1.4"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- ── Auth required (signed out) ─────────────────────────────────────── -->
+    <section id="auth-view" class="hidden">
+      <div class="auth-hero">
+        <img id="auth-logo" src="/icons/icon48.png" alt="Patches" />
+        <h1>Patches</h1>
+        <p class="auth-blurb">Reshape any website around how you work — describe a change and Patches writes the CSS for you.</p>
+      </div>
+      <div id="auth-tabs">
+        <button type="button" class="auth-tab active" data-mode="signin">Sign in</button>
+        <button type="button" class="auth-tab" data-mode="signup">Sign up</button>
+      </div>
+      <p id="auth-error" class="hidden" role="alert"></p>
+      <p id="auth-notice" class="hidden" role="status"></p>
+      <form id="auth-form" novalidate>
+        <label for="auth-email">Email</label>
+        <div class="input-row">
+          <input id="auth-email" type="email" autocomplete="email" placeholder="you@example.com" required />
+        </div>
+        <label for="auth-password">Password</label>
+        <div class="input-row">
+          <input id="auth-password" type="password" autocomplete="current-password" placeholder="At least 6 characters" required />
+          <button type="button" class="link-btn" id="auth-toggle-password">Show</button>
+        </div>
+        <button type="button" class="link-btn link-btn-block" id="auth-forgot">Forgot password?</button>
+        <button type="submit" id="auth-submit">Sign in</button>
+      </form>
+      <p class="auth-footnote">Managed by Firebase Authentication — Patches stores patches, never passwords.</p>
+    </section>
+
+    <!-- ── Unsupported page notice ──────────────────────────────────────── -->
+    <section id="unsupported" class="hidden">
+      <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="1.4" opacity=".4"/><path d="M8 8l6 6M14 8l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <p><strong>Patches can’t run here.</strong></p>
+      <p class="hint-text">Browser pages (chrome://, Chrome Web Store) can’t be modified. Open a normal website to use Patches.</p>
+    </section>
+
+    <div id="main-content">
+      <!-- ── New patch ───────────────────────────────────────────────────── -->
+      <section id="create-view">
+        <div id="prompt-row">
+          <textarea
+            id="prompt-input"
+            rows="2"
+            placeholder='Describe a change… "hide sidebar", "dark mode", "larger text"'
+            spellcheck="false"
+          ></textarea>
+          <button type="button" id="btn-generate" title="Generate patch">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7h10M8 3l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <div id="hint-chips">
+          <button type="button" class="hint">hide sidebar</button>
+          <button type="button" class="hint">dark mode</button>
+          <button type="button" class="hint">larger text</button>
+          <button type="button" class="hint">hide footer</button>
+          <button type="button" class="hint">remove ads</button>
+        </div>
+
+        <!-- Status area: loading / success / error -->
+        <div id="status" class="hidden"></div>
+      </section>
+
+      <!-- ── Saved patches ────────────────────────────────────────────────── -->
+      <section id="saved-view">
+        <div id="saved-header">
+          <h2>Saved patches</h2>
+          <button type="button" id="btn-reset-site" class="text-btn" title="Remove all patches for this site">Reset site</button>
+        </div>
+        <div id="patch-list"></div>
+        <div id="patch-empty" class="hidden">
+          <svg width="26" height="26" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="12" stroke="currentColor" stroke-width="1.5" opacity=".3"/><path d="M16 11v6M16 20v1" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".5"/></svg>
+          <p>No patches for this site yet.</p>
+          <p class="hint-text">Describe a change above to create one.</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- ── Settings view ──────────────────────────────────────────────────── -->
+    <section id="settings-view" class="hidden">
+      <div id="settings-header">
+        <h2>Settings</h2>
+        <button type="button" id="btn-settings-back" class="icon-btn" title="Back">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7l5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+
+      <div id="key-group">
+        <label for="key-input">Gemini API key</label>
+        <p id="key-status">Checking…</p>
+        <div id="input-row">
+          <input
+            id="key-input"
+            type="password"
+            placeholder="AQ.… or AIza…"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Gemini API key"
+          />
+          <button id="btn-toggle-key" type="button" aria-label="Show or hide API key">Show</button>
+        </div>
+        <p id="settings-error" class="hidden" role="alert"></p>
+        <a id="key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Get a free key at aistudio.google.com/apikey</a>
+        <button type="button" id="btn-save-key">Save key</button>
+        <p id="key-footnote">Your key is stored only in this browser’s local extension storage and sent directly from your browser to Google’s Gemini API. It is never included in the extension files.</p>
+      </div>
+
+      <div id="model-group">
+        <label for="model-select">Model</label>
+        <select id="model-select" aria-label="Gemini model"></select>
+      </div>
+
+      <div id="account-group">
+        <label>Account</label>
+        <p id="account-email" class="account-line">Not signed in</p>
+        <button type="button" id="btn-sign-out" class="text-danger-btn" disabled>Sign out</button>
+      </div>
+
+      <div id="launcher-group">
+        <label class="check-row" for="launcher-toggle">
+          <input type="checkbox" id="launcher-toggle" checked />
+          <span>Show the floating Patches launcher on webpages</span>
+        </label>
+      </div>
+    </section>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

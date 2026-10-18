@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Patches Sidebar</title>
+  <link rel="stylesheet" href="sidebar.css" />
+</head>
+<body>
+  <div id="popup">
+    <!-- ── Header ────────────────────────────────────────────────────────── -->
+    <header id="popup-header">
+      <div id="brand-row">
+        <img id="logo" src="/icons/icon32.png" alt="Patches" />
+        <div id="brand-text">
+          <h1>Patches</h1>
+          <span id="domain-badge" title="">No site</span>
+        </div>
+      </div>
+      <div id="header-actions">
+        <button type="button" id="account-chip" class="hidden" title="Account">
+          <span class="dot"></span><span id="account-chip-email"></span>
+        </button>
+        <button type="button" id="btn-close" class="icon-btn" title="Close sidebar (Esc)" aria-label="Close Patches sidebar">
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+        <div id="account-menu" class="hidden">
+          <div class="menu-email" id="menu-email"></div>
+          <button type="button" id="menu-sign-out" class="menu-sign-out">Sign out</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── Auth view (signed out) ────────────────────────────────────────── -->
+    <section id="auth-view" class="hidden">
+      <div class="auth-hero">
+        <img id="auth-logo" src="/icons/icon48.png" alt="Patches" />
+        <h1>Patches</h1>
+        <p class="auth-blurb">Reshape any website around how you work — describe a change and Patches writes the CSS for you.</p>
+      </div>
+      <div id="auth-tabs">
+        <button type="button" class="auth-tab active" data-mode="signin">Sign in</button>
+        <button type="button" class="auth-tab" data-mode="signup">Sign up</button>
+      </div>
+      <p id="auth-error" class="hidden" role="alert"></p>
+      <p id="auth-notice" class="hidden" role="status"></p>
+      <form id="auth-form" novalidate>
+        <label for="auth-email">Email</label>
+        <div class="input-row">
+          <input id="auth-email" type="email" autocomplete="email" spellcheck="false" placeholder="you@example.com" required />
+        </div>
+        <label for="auth-password">Password</label>
+        <div class="input-row">
+          <input id="auth-password" type="password" autocomplete="current-password" placeholder="At least 6 characters" required />
+          <button type="button" class="link-btn" id="auth-toggle-password">Show</button>
+        </div>
+        <button type="button" class="link-btn link-btn-block hidden" id="auth-forgot">Forgot password?</button>
+        <button type="submit" id="auth-submit">Sign in</button>
+      </form>
+      <p class="auth-footnote">Managed by Firebase Authentication — Patches stores patches, never passwords.</p>
+    </section>
+
+    <!-- ── Main (patches) view ───────────────────────────────────────────── -->
+    <section id="main-content" class="hidden">
+      <div id="create-view">
+        <div id="prompt-row">
+          <textarea
+            id="prompt-input"
+            rows="2"
+            placeholder='Describe a change… "hide sidebar", "dark mode", "larger text"'
+            spellcheck="false"
+          ></textarea>
+          <button type="button" id="btn-generate" aria-label="Generate patch" title="Generate patch">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7h10M8 3l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <div id="hint-chips">
+          <button type="button" class="hint">hide sidebar</button>
+          <button type="button" class="hint">dark mode</button>
+          <button type="button" class="hint">larger text</button>
+          <button type="button" class="hint">hide footer</button>
+        </div>
+        <div id="status" class="hidden"></div>
+      </div>
+
+      <div id="saved-view">
+        <div id="saved-header">
+          <h2>Saved patches</h2>
+          <button type="button" id="btn-reset-site" class="text-btn" title="Remove all patches for this site">Reset site</button>
+        </div>
+        <div id="patch-list"></div>
+        <div id="patch-empty" class="hidden">
+          <p>No patches for this site yet.</p>
+          <p class="hint-text">Describe a change above to create one.</p>
+        </div>
+        <div id="toggles-view">
+          <label class="switch-row" for="patch-toggle">
+            <span>Patches on this page</span>
+            <span class="switch"><input type="checkbox" id="patch-toggle" checked /><span class="knob"></span></span>
+          </label>
+          <label class="switch-row" for="launcher-toggle">
+            <span>Show floating launcher</span>
+            <span class="switch"><input type="checkbox" id="launcher-toggle" checked /><span class="knob"></span></span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Settings view ─────────────────────────────────────────────────── -->
+    <section id="settings-view" class="hidden">
+      <div id="settings-header">
+        <h2>Settings</h2>
+        <button type="button" id="btn-settings-back" class="icon-btn" title="Back">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7l5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div id="key-group">
+        <label for="key-input">Gemini API key</label>
+        <p id="key-status">Checking…</p>
+        <div id="input-row">
+          <input id="key-input" type="password" placeholder="AQ.… or AIza…" autocomplete="off" spellcheck="false" aria-label="Gemini API key" />
+          <button id="btn-toggle-key" type="button" aria-label="Show or hide API key">Show</button>
+        </div>
+        <p id="settings-error" class="hidden" role="alert"></p>
+        <a id="key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Get a free key at aistudio.google.com/apikey</a>
+        <button type="button" id="btn-save-key">Save key</button>
+      </div>
+      <div id="model-group">
+        <label for="model-select">Model</label>
+        <select id="model-select" aria-label="Gemini model"></select>
+      </div>
+      <div id="account-group">
+        <label>Account</label>
+        <p id="account-email" class="account-line">Not signed in</p>
+        <button type="button" id="btn-sign-out" class="text-danger-btn" disabled>Sign out</button>
+      </div>
+    </section>
+  </div>
+  <script src="sidebar.js"></script>
+</body>
+</html>
