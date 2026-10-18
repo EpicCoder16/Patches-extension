@@ -1,12 +1,13 @@
 'use strict';
 
-// Patches sidebar page — runs inside an extension-origin iframe embedded in
-// webpages. Because this is a separate chrome-extension:// document, the host
-// page's keydown/hotkey handlers can neither see nor cancel keystrokes here
-// (root-cause fix for the "@" typing bug: page handlers e.g. number-seek on
-// YouTube swallow Shift+2 before it reached the old in-page Shadow-DOM input).
+// Patches side panel page — rendered in Chrome's NATIVE side panel
+// (chrome.sidePanel, opened via the floating launcher on the page edge).
+// Opening the panel resizes the webpage viewport; Chrome manages the close
+// control, so this document never simulates closing it.
 //
 // Reuses the popup's UI structure and the same background message protocol.
+// Because it is a chrome-extension:// document, host-page styles and keyboard
+// handlers can neither reach nor observe keystrokes here.
 
 const $ = (id) => document.getElementById(id);
 
@@ -17,7 +18,6 @@ const el = {
   accountMenu:   $('account-menu'),
   menuEmail:     $('menu-email'),
   btnSignOut:    $('menu-sign-out'),
-  btnClose:      $('btn-close'),
 
   authView:      $('auth-view'),
   authTabs:      Array.from(document.querySelectorAll('#auth-tabs .auth-tab')),
@@ -42,7 +42,6 @@ const el = {
   patchEmpty:    $('patch-empty'),
   btnResetSite:  $('btn-reset-site'),
   patchToggle:   $('patch-toggle'),
-  launcherToggle: $('launcher-toggle'),
 
   btnBack:       $('btn-settings-back'),
   keyStatus:     $('key-status'),
@@ -93,14 +92,12 @@ function isLikelyHighDemand(errorText) {
   );
 }
 
-function closeSidebar() {
-  chrome.storage.local.set({ sidebar: { open: false } }).catch(() => {});
-}
-
 // ── Domain / tab ─────────────────────────────────────────────────────────────
+// The side panel lives outside the web tab, so resolve the tab by keyboard
+// focus rather than "currentWindow" (which has no window context here).
 async function loadActiveTabInfo() {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (tab && tab.url) {
       state.url = tab.url;
       state.domain = (new URL(tab.url).hostname || '').replace(/^www\./, '');
@@ -174,7 +171,6 @@ function render() {
 
 function renderToggles() {
   el.patchToggle.checked = state.settings ? state.settings.patchesEnabled !== false : true;
-  el.launcherToggle.checked = state.settings ? state.settings.launcherEnabled !== false : true;
 }
 
 function renderSettingsAccount() {
@@ -381,23 +377,9 @@ el.btnSignOut.addEventListener('click', async () => {
   }
 });
 
-el.btnSignOut2.addEventListener('click', async () => {
-  const res = await sendMessage({ type: 'auth-sign-out' });
-  if (res && res.ok) {
-    await reloadAuth();
-    render();
-  }
-});
-
-el.btnClose.addEventListener('click', closeSidebar);
-
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    // Handler lives in the extension document here — no interference with or
-    // from the host page. Close settings first, then the sidebar.
-    if (state.settingsOpen) { showSettings(false); return; }
-    closeSidebar();
-  }
+  // Esc only backs out of the settings view — Chrome owns closing the panel.
+  if (e.key === 'Escape' && state.settingsOpen) showSettings(false);
 });
 
 // ── Prompt & patch management ────────────────────────────────────────────────
@@ -491,11 +473,6 @@ el.patchToggle.addEventListener('change', async () => {
   await sendMessage({ type: 'toggle-patches', enabled: el.patchToggle.checked });
 });
 
-el.launcherToggle.addEventListener('change', async () => {
-  await sendMessage({ type: 'set-launcher-enabled', enabled: el.launcherToggle.checked });
-  if (state.settings) state.settings.launcherEnabled = el.launcherToggle.checked;
-});
-
 el.btnResetSite.addEventListener('click', async () => {
   if (!state.domain) return;
   if (!window.confirm(`Remove all saved patches for ${state.domain}?`)) return;
@@ -578,7 +555,7 @@ el.modelSelect.addEventListener('change', async () => {
   await sendMessage({ type: 'set-model', model: el.modelSelect.value });
 });
 
-// ── Storage sync ─────────────────────────────────────────────────────────────
+// ── Storage + tab sync ───────────────────────────────────────────────────────
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.patches) reloadPatches();
@@ -587,15 +564,34 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
+// Keep the panel's context in step when the user switches tabs or windows
+// while it is open (domain badge + patch list follow the active tab).
+if (chrome.tabs && chrome.tabs.onActivated) {
+  chrome.tabs.onActivated.addListener(async () => {
+    state.patches = [];
+    await loadActiveTabInfo();
+    render();
+    await reloadPatches();
+  });
+}
+if (chrome.windows && chrome.windows.onFocusChanged) {
+  chrome.windows.onFocusChanged.addListener(async () => {
+    state.patches = [];
+    await loadActiveTabInfo();
+    render();
+    await reloadPatches();
+  });
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────────────
 async function boot() {
   setAuthMode('signin');
   await Promise.all([loadActiveTabInfo(), reloadSettings(), reloadPatches()]);
   await reloadAuth();
   render();
-  // Signal readiness to the host (used by the e2e tests).
+  // Signal readiness to the background (used by the e2e tests).
   try {
-    chrome.runtime.sendMessage({ target: 'background', type: 'sidebar-view-ready' }, () => {
+    chrome.runtime.sendMessage({ target: 'background', type: 'panel-view-ready' }, () => {
       void chrome.runtime.lastError;
     });
   } catch { /* no listener / worker asleep */ }

@@ -17,7 +17,7 @@ const { execFileSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const srcDir = path.join(root, 'extension');
 const outDir = path.join(root, 'dist', 'extension');  // Everything the extension loads, per extension/manifest.json.
-  const INCLUDES = ['manifest.json', 'background', 'content', 'popup', 'sidebar', 'offscreen', 'icons'];
+  const INCLUDES = ['manifest.json', 'background', 'content', 'popup', 'panel', 'offscreen', 'icons'];
 
 function fail(msg) {
   process.stderr.write(`[build:extension] ${msg}\n`);
@@ -43,7 +43,10 @@ function main() {
     ...(manifest.content_scripts || []).flatMap((cs) => (cs.js || []).map((f) => ['content script', f])),
     ...Object.entries(manifest.icons || {}),
   ];
-  for (const [kind, ref] of manifestRefs) {
+  for (const [kind, ref] of [
+    ...manifestRefs,
+    ['side_panel.default_path', manifest.side_panel && manifest.side_panel.default_path],
+  ]) {
     if (!ref) fail(`Manifest references no ${kind} path.`);
     if (!fs.existsSync(path.join(srcDir, ref))) fail(`Manifest ${kind} does not exist: extension/${ref}`);
   }

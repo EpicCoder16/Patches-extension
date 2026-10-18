@@ -1,7 +1,7 @@
 'use strict';
 
 // Patches popup — Firebase-auth-gated. Talks to the MV3 background service
-// worker via chrome.runtime messages, mirroring the sidebar's capabilities.
+// worker via chrome.runtime messages, mirroring the side panel's capabilities.
 
 const $ = (id) => document.getElementById(id);
 
@@ -47,7 +47,6 @@ const el = {
   modelSelect:   $('model-select'),
   accountEmail:  $('account-email'),
   btnSignOut:    $('btn-sign-out'),
-  launcherToggle: $('launcher-toggle'),
 };
 
 let state = {
@@ -158,10 +157,7 @@ function renderSettingsAccount() {
   const signedIn = Boolean(state.auth.signedIn);
   el.accountEmail.textContent = signedIn ? (state.auth.email || 'Signed in') : 'Not signed in';
   el.btnSignOut.disabled = !signedIn;
-  el.btnSignOut.textContent = signedIn ? 'Sign out' : 'Sign in in the sidebar';
-  if (state.settings && el.launcherToggle) {
-    el.launcherToggle.checked = state.settings.launcherEnabled !== false;
-  }
+  el.btnSignOut.textContent = signedIn ? 'Sign out' : 'Sign in in the side panel';
 }
 
 function renderPatches() {
@@ -372,11 +368,6 @@ el.btnSignOut.addEventListener('click', async () => {
     await reloadAuth();
     render();
   }
-});
-
-el.launcherToggle.addEventListener('change', async () => {
-  await sendMessage({ type: 'set-launcher-enabled', enabled: el.launcherToggle.checked });
-  if (state.settings) state.settings.launcherEnabled = el.launcherToggle.checked;
 });
 
 // ── Generate patch ───────────────────────────────────────────────────────────

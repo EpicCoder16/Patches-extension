@@ -1,22 +1,28 @@
-/* Patches sidebar page — rendered inside an extension-origin iframe embedded
-   in webpages. Design tokens identical to the popup (popup.css); layout is
-   full-height with a left divider. Inputs live in a separate document, so
-   host-page key handlers cannot observe or cancel keystrokes here. */
+/* Patches side panel page — rendered in Chrome's native side panel.
+   Design tokens identical to the popup (popup.css): light sage-green surfaces,
+   subtle borders, #608463 accent; layout is full-height, responsive to the
+   panel width. Inputs live in an extension-origin document, so host-page
+   styles and key handlers cannot reach them. */
 
 :root {
-  --bg:          #0a0a0f;
-  --surface:     #111118;
-  --surface2:    #1a1a24;
-  --surface3:    #22222f;
-  --border:      rgba(255,255,255,0.07);
-  --border-hi:   rgba(255,255,255,0.14);
-  --text:        #e8e8f0;
-  --text-2:      #8888a0;
-  --text-3:      #55556a;
-  --accent:      #6e6af0;
-  --accent-dim:  rgba(110,106,240,0.15);
-  --success:     #34d399;
-  --danger:      #f87171;
+  --bg:          #FDFDFD;
+  --surface:     #FDFDFD;
+  --surface2:    #F2F6F2;
+  --surface3:    #D2E1D5;
+  --border:      rgba(157, 185, 160, 0.45);
+  --border-hi:   rgba(96, 132, 99, 0.45);
+  --text:        #253329;
+  --text-2:      #5A6B5E;
+  --text-3:      #87958B;
+  --accent:      #608463;
+  --accent-hover: #709674;
+  --accent-strong: #4E6F52; /* Clouded Pine darkened within hue — white-text AA contrast */
+  --accent-dim:  rgba(96, 132, 99, 0.14);
+  --success:     #3E7D4E;
+  --danger:      #C2483F;
+  --danger-dim:  rgba(194, 72, 63, 0.07);
+  --success-dim: rgba(62, 125, 78, 0.08);
+  --shadow-menu: 0 8px 24px rgba(37, 51, 41, 0.14);
   --radius:      10px;
   --radius-sm:   6px;
   --mono:        'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
@@ -45,9 +51,9 @@ input, textarea, select { font-family: inherit; }
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-width: 0;
   background: var(--bg);
   border-left: 1px solid var(--border);
-  box-shadow: -16px 0 44px rgba(0,0,0,0.45);
   overflow: hidden;
 }
 
@@ -107,7 +113,7 @@ input, textarea, select { font-family: inherit; }
   position: absolute; top: calc(100% - 6px); right: 8px;
   background: var(--surface); border: 1px solid var(--border-hi);
   border-radius: var(--radius); padding: 8px; z-index: 20;
-  box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+  box-shadow: var(--shadow-menu);
   width: 200px;
 }
 .menu-email {
@@ -120,7 +126,7 @@ input, textarea, select { font-family: inherit; }
   cursor: pointer; color: var(--danger); font-size: 12px;
   padding: 6px 8px; border-radius: var(--radius-sm);
 }
-.menu-sign-out:hover { background: rgba(248,113,113,0.08); }
+.menu-sign-out:hover { background: var(--danger-dim); }
 
 /* ── Auth view ───────────────────────────────────────────────────────────── */
 #auth-view {
@@ -169,27 +175,27 @@ input, textarea, select { font-family: inherit; }
   background: none; border: none; cursor: pointer;
   color: var(--text-3); font-size: 11px; padding: 2px 4px;
 }
-.link-btn:hover { color: var(--accent); }
+.link-btn:hover { color: var(--accent-strong); }
 .link-btn-block { display: block; margin: 6px 0 0 auto; }
 
 #auth-error {
-  background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.25);
+  background: var(--danger-dim); border: 1px solid rgba(194,72,63,0.35);
   color: var(--danger); font-size: 11px; border-radius: var(--radius-sm);
   padding: 6px 9px; margin-bottom: 8px;
 }
 #auth-notice {
-  background: rgba(52,211,153,0.07); border: 1px solid rgba(52,211,153,0.25);
+  background: var(--success-dim); border: 1px solid rgba(62,125,78,0.35);
   color: var(--success); font-size: 11px; border-radius: var(--radius-sm);
   padding: 6px 9px; margin-bottom: 8px;
 }
 #auth-submit {
   width: 100%; height: 36px; margin-top: 10px;
-  background: var(--accent); color: #fff;
+  background: var(--accent-strong); color: #fff;
   border: none; border-radius: var(--radius-sm);
   font-size: 12.5px; font-weight: 600; cursor: pointer;
-  transition: opacity .15s;
+  transition: background .15s;
 }
-#auth-submit:hover { opacity: .92; }
+#auth-submit:hover { background: var(--accent-hover); }
 #auth-submit:disabled { opacity: .5; cursor: default; }
 .auth-footnote { margin-top: 12px; font-size: 10px; color: var(--text-3); line-height: 1.5; text-align: center; }
 
@@ -212,12 +218,12 @@ input, textarea, select { font-family: inherit; }
 #prompt-input:disabled { opacity: .55; }
 
 #btn-generate {
-  width: 38px; border: 1px solid var(--accent); border-radius: var(--radius-sm);
-  background: var(--accent); color: #fff; cursor: pointer;
+  width: 38px; border: 1px solid var(--accent-strong); border-radius: var(--radius-sm);
+  background: var(--accent-strong); color: #fff; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  transition: opacity .15s, transform .1s;
+  transition: background .15s, transform .1s;
 }
-#btn-generate:hover { opacity: .9; }
+#btn-generate:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 #btn-generate:active { transform: scale(.96); }
 #btn-generate:disabled { opacity: .35; cursor: default; }
 
@@ -236,8 +242,8 @@ input, textarea, select { font-family: inherit; }
   padding: 8px 10px; font-size: 11.5px; line-height: 1.45;
 }
 #status.loading { display: flex; align-items: center; gap: 8px; background: var(--surface2); color: var(--text-2); border: 1px solid var(--border); }
-#status.success { background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.25); color: var(--success); }
-#status.error { background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.25); color: var(--danger); }
+#status.success { background: var(--success-dim); border: 1px solid rgba(62,125,78,0.3); color: var(--success); }
+#status.error { background: var(--danger-dim); border: 1px solid rgba(194,72,63,0.35); color: var(--danger); }
 
 .spinner {
   width: 12px; height: 12px;
@@ -325,8 +331,8 @@ input, textarea, select { font-family: inherit; }
   width: 11px; height: 11px; border-radius: 50%;
   background: var(--text-3); transition: left .15s, background .15s;
 }
-.switch input:checked + .knob { background: var(--accent-dim); border-color: var(--accent); }
-.switch input:checked + .knob::after { left: 15px; background: var(--accent); }
+.switch input:checked + .knob { background: var(--accent-dim); border-color: var(--accent-strong); }
+.switch input:checked + .knob::after { left: 15px; background: var(--accent-strong); }
 
 /* ── Settings view ──────────────────────────────────────────────────────── */
 #settings-view { flex: 1; overflow-y: auto; min-height: 0; }
@@ -354,15 +360,15 @@ input, textarea, select { font-family: inherit; }
   display: inline-block; margin: 6px 0 10px;
   color: var(--text-2); font-size: 11px; text-decoration: none;
 }
-#key-link:hover { color: var(--accent); }
+#key-link:hover { color: var(--accent-strong); }
 
 #btn-save-key {
-  width: 100%; background: var(--accent); color: #fff;
+  width: 100%; background: var(--accent-strong); color: #fff;
   border: none; border-radius: var(--radius-sm);
   font-size: 12px; font-weight: 600; padding: 8px 0; cursor: pointer;
-  transition: opacity .15s;
+  transition: background .15s;
 }
-#btn-save-key:hover { opacity: .9; }
+#btn-save-key:hover { background: var(--accent-hover); }
 #btn-save-key:disabled { opacity: .5; cursor: default; }
 
 #model-select {
@@ -379,5 +385,5 @@ input, textarea, select { font-family: inherit; }
   border-radius: var(--radius-sm); color: var(--danger);
   font-size: 11px; padding: 5px 10px; cursor: pointer;
 }
-.text-danger-btn:hover { background: rgba(248,113,113,0.08); }
+.text-danger-btn:hover { background: var(--danger-dim); }
 .text-danger-btn:disabled { opacity: .4; cursor: default; background: none; }

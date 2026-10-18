@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Patches Sidebar</title>
-  <link rel="stylesheet" href="sidebar.css" />
+  <title>Patches — Side Panel</title>
+  <link rel="stylesheet" href="panel.css" />
 </head>
 <body>
   <div id="popup">
@@ -19,9 +19,6 @@
       <div id="header-actions">
         <button type="button" id="account-chip" class="hidden" title="Account">
           <span class="dot"></span><span id="account-chip-email"></span>
-        </button>
-        <button type="button" id="btn-close" class="icon-btn" title="Close sidebar (Esc)" aria-label="Close Patches sidebar">
-          <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
         <div id="account-menu" class="hidden">
           <div class="menu-email" id="menu-email"></div>
@@ -97,10 +94,6 @@
             <span>Patches on this page</span>
             <span class="switch"><input type="checkbox" id="patch-toggle" checked /><span class="knob"></span></span>
           </label>
-          <label class="switch-row" for="launcher-toggle">
-            <span>Show floating launcher</span>
-            <span class="switch"><input type="checkbox" id="launcher-toggle" checked /><span class="knob"></span></span>
-          </label>
         </div>
       </div>
     </section>
@@ -135,6 +128,6 @@
       </div>
     </section>
   </div>
-  <script src="sidebar.js"></script>
+  <script src="panel.js"></script>
 </body>
 </html>

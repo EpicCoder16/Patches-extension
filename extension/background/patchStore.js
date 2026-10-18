@@ -6,7 +6,6 @@
 const PATCHES_KEY = 'patches';
 const SETTINGS_KEY = 'settings';
 const AUTH_KEY = 'auth';
-const SIDEBAR_KEY = 'sidebar';
 
 const DEFAULT_SETTINGS = {
   geminiApiKey: '',
@@ -114,16 +113,6 @@ async function setAuthCache(state) {
   return next;
 }
 
-// ── Sidebar open state (shared across tabs) ─────────────────────────────────
-async function getSidebarState() {
-  const stored = await chrome.storage.local.get(SIDEBAR_KEY);
-  return { open: Boolean(stored[SIDEBAR_KEY] && stored[SIDEBAR_KEY].open) };
-}
-
-async function setSidebarState(open) {
-  await chrome.storage.local.set({ [SIDEBAR_KEY]: { open: !!open } });
-}
-
 async function onStorageChanged(cb) {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local') cb(changes);
@@ -137,8 +126,6 @@ export {
   DEFAULT_SETTINGS,
   getAuthCache,
   setAuthCache,
-  getSidebarState,
-  setSidebarState,
   getDomain,
   getPatchMap,
   savePatchMap,

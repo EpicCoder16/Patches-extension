@@ -9,8 +9,9 @@
 //   1. Manifest loads via Extensions.loadUnpacked; MV3 module service worker runs.
 //   2. Content script injects; saved patch re-applies on page load; toggle off/on
 //      reverts/re-applies without reload; removal clears CSS; DOM outline works.
-//   3. Floating launcher auto-appears, opens the sidebar, is not duplicated.
-//   4. Sidebar open state persists across a page reload; Esc closes it.
+//   3. Floating launcher auto-appears; clicking it calls chrome.sidePanel.open.
+//   4. Native side panel page shows the sign-in screen signed out and accepts
+//      the "@" keystroke (extension-origin document, no host listeners).
 //   5. Unauthenticated users are blocked from protected operations (auth gate).
 //   6. Real Firebase (repo's firebase-config.json): sign-up, auth state, cloud
 //      Firestore push/pull of the patches map (users/{uid}/data/patches),
@@ -119,8 +120,8 @@ async function main() {
     }
 
     /**
-     * Drive messages exactly like the sidebar does: executeScript in the tab's
-     * content-script world calling chrome.runtime.sendMessage.
+     * Drive messages exactly like the side panel/popup does: executeScript in
+     * the tab's content-script world calling chrome.runtime.sendMessage.
      */
     async function csMsg(msg) {
       const res = await swEval(async ([target, message]) => {
@@ -176,7 +177,7 @@ async function main() {
     check('saved patch restores on page load', styleInfo.exists && styleInfo.bg === 'rgb(18, 52, 86)', `bg=${styleInfo.bg || 'n/a'}`);
     check('patched CSS hid the #sidebar element', await page.evaluate(() => getComputedStyle(document.getElementById('sidebar')).display === 'none'));
 
-    // ── Floating launcher ─────────────────────────────────────────────────────
+    // ── Floating launcher + native side panel ───────────────────────────────
     const launcherState = await page.evaluate(() => {
       const host = document.querySelector('[data-patches="launcher-host"]');
       if (!host) return { present: false };
@@ -186,91 +187,166 @@ async function main() {
     });
     check('floating launcher auto-injected (single host, page-level)', launcherState.present && launcherState.count === 1);
     check('launcher visible by default (no toolbar click required)', !launcherState.hidden);
+    check('overlay sidebar removed — no in-page sidebar host or iframe exists', await page.evaluate(() =>
+      !document.querySelector('[data-patches="sidebar-host"]') && !document.querySelector('iframe[data-patches="sidebar-frame"]')));
 
-    // Open the sidebar by clicking the launcher (it sits at the right edge,
-    // vertically centered — click via hit point since its shadow is closed).
-    const hostOpen = () => page.evaluate(() => {
-      const host = document.querySelector('[data-patches="sidebar-host"]');
-      if (!host) return { present: false };
-      // CSSOM serializes translateX(0) as translateX(0px)
-      return { present: true, open: /translateX\(0(?:px)?\)/.test(host.style.transform), raw: host.style.transform };
+    // ── Launcher toggle: chrome.sidePanel open/close state machine ──────────
+    // NOTE: CDP-synthesized clicks carry no user activation, so in headless
+    // Chrome the real open() rejects with its expected gestureRequired error —
+    // the real-gesture OPEN path cannot be driven here and must be verified
+    // manually in real Chrome (documented Chrome behaviour: content-script
+    // click interactions may call sidePanel.open). The toggle STATE MACHINE
+    // is verified deterministically below over the same message paths by
+    // installing success doubles of open/close; the real-API routing is
+    // asserted first with an outcome-recording spy.
+    let panelSpyOk = false;
+    try {
+      await swEval(() => {
+        if (!self.__patchesPanelSeed) {
+          self.__patchesPanelSeed = true;
+          self.__patchesOriginalPanelOpen = chrome.sidePanel.open.bind(chrome.sidePanel);
+          self.__patchesOriginalPanelClose = chrome.sidePanel.close && chrome.sidePanel.close.bind(chrome.sidePanel);
+          self.__patchesPanelCalls = [];
+          const record = (api, opts, ok, err) => { self.__patchesPanelCalls.push({ api, tabId: opts && opts.tabId, windowId: opts && opts.windowId, ok, err }); };
+          chrome.sidePanel.open = async (opts) => {
+            try { await self.__patchesOriginalPanelOpen(opts); record('open', opts, true); }
+            catch (e) { record('open', opts, false, String(e && e.message || e)); throw e; }
+          };
+          if (self.__patchesOriginalPanelClose) {
+            chrome.sidePanel.close = async (opts) => {
+              try { await self.__patchesOriginalPanelClose(opts); record('close', opts, true); }
+              catch (e) { record('close', opts, false, String(e && e.message || e)); throw e; }
+            };
+          }
+        }
+      });
+      panelSpyOk = true;
+    } catch { /* binding not reassignable in this Chrome */ }
+
+    const panelCalls = async () => (panelSpyOk ? await swEval(() => (self.__patchesPanelCalls || []).slice()) : []);
+    const panelState = async () => swEval(async () => {
+      const s = await chrome.storage.local.get('panelOpen');
+      return s.panelOpen || null;
     });
-    const frameSrc = () => page.evaluate(() => {
-      const f = document.querySelector('iframe[data-patches="sidebar-frame"]');
-      return f ? f.src : null;
+    const resetCalls = async () => swEval(() => { self.__patchesPanelCalls = []; });
+    const installDoubles = async () => swEval(() => {
+      chrome.sidePanel.open = async (opts) => { self.__patchesPanelCalls.push({ api: 'open', tabId: opts && opts.tabId, windowId: opts && opts.windowId, ok: true }); };
+      chrome.sidePanel.close = async (opts) => { self.__patchesPanelCalls.push({ api: 'close', tabId: opts && opts.tabId, windowId: opts && opts.windowId, ok: true }); };
     });
-    await page.mouse.click(1279, 400); // near right edge, vertically centered
+    const restoreRealApi = async () => swEval(() => {
+      chrome.sidePanel.open = (opts) => self.__patchesOriginalPanelOpen(opts);
+      if (self.__patchesOriginalPanelClose) chrome.sidePanel.close = (opts) => self.__patchesOriginalPanelClose(opts);
+    });
+
+    // Real-API routing: the launcher click must reach chrome.sidePanel.open
+    // for this tab (outcome may be a gesture rejection in headless — fine).
+    await page.mouse.click(1279, 400);
     await new Promise((r) => setTimeout(r, 900));
-    const afterClick = await hostOpen();
-    const srcAfterClick = await frameSrc();
-    check('clicking the launcher opens the sidebar', afterClick.present && afterClick.open, JSON.stringify(afterClick));
-    check('sidebar renders in an extension-origin iframe',
-      Boolean(srcAfterClick) && srcAfterClick.startsWith(`chrome-extension://${extId}/sidebar/sidebar.html`), srcAfterClick || 'missing');
+    const routingCalls = await panelCalls();
+    check('launcher click routes to chrome.sidePanel.open for this tab',
+      Boolean(routingCalls.length && routingCalls[0].api === 'open' && routingCalls[0].tabId === TAB_ID),
+      JSON.stringify(routingCalls));
+
+    // Router plumbing: a request without a real gesture must be REJECTED by
+    // chrome's user-gesture requirement (never a router unknown-message or
+    // handler-crash error).
+    const routedNoGesture = await csMsg({ type: 'toggle-side-panel' });
+    check('toggle-side-panel routed without router error (gesture guard fires headlessly)',
+      routedNoGesture && routedNoGesture.ok === false && routedNoGesture.gestureRequired === true,
+      JSON.stringify(routedNoGesture));
+
+    // ── Toggle state machine (success doubles over the same message path) ──
+    await resetCalls();
+    await installDoubles();
+    await swEval(async () => { await chrome.storage.local.remove('panelOpen'); });
+
+    // Click 1': closed → open.
+    await page.mouse.click(1279, 400);
+    await new Promise((r) => setTimeout(r, 700));
+    let st = await panelState();
+    check('toggle click on closed panel → open (state persisted true)', Boolean(st && st.open === true), JSON.stringify(st));
+
+    // Click 2': open → close.
+    await page.mouse.click(1279, 400);
+    await new Promise((r) => setTimeout(r, 700));
+    st = await panelState();
+    const closeRecords = await panelCalls();
+    check('toggle click on open panel → close (state persisted false, right scope)',
+      Boolean(st && st.open === false && closeRecords.some((c) => c.api === 'close' && c.tabId === TAB_ID)),
+      JSON.stringify({ last: closeRecords.slice(-2), st }));
+
+    // Click 3': closed → open again.
+    await page.mouse.click(1279, 400);
+    await new Promise((r) => setTimeout(r, 700));
+    st = await panelState();
+    check('toggle click again reopens (state persisted true, no desync)', Boolean(st && st.open === true), JSON.stringify(st));
+
+    // Rapid repeated clicks keep alternating.
+    await page.mouse.click(1279, 400);
+    await new Promise((r) => setTimeout(r, 350));
+    await page.mouse.click(1279, 400);
+    await new Promise((r) => setTimeout(r, 700));
+    st = await panelState();
+    check('rapid repeated clicks keep alternating (final state open)', Boolean(st && st.open === true), JSON.stringify(st));
+    await restoreRealApi();
+
+    // Stale-state recovery (stands in for a Chrome-side ✕ close whose
+    // onClosed event the worker missed): the tracker says open but Chrome
+    // reports "No active … side panel" → the tracked state is corrected to
+    // closed (in real Chrome the onClosed handler writes exactly this).
+    await swEval(async (tab) => {
+      await chrome.storage.local.set({ panelOpen: { open: true, tabId: tab, windowId: null, at: Date.now() } });
+    }, TAB_ID);
+    await csMsg({ type: 'toggle-side-panel' });
+    await new Promise((r) => setTimeout(r, 800));
+    st = await panelState();
+    check('stale open-state self-corrects when Chrome has no active panel', Boolean(st && st.open === false), JSON.stringify(st));
+
+    await swEval(async () => { await chrome.storage.local.remove('panelOpen'); });
+
+    // ── Native panel page (extension-origin document) ────────────────────────
+    // The real panel opens as Chrome's side panel; here it is loaded directly
+    // as a page so its UI can be asserted (all markup/behaviour is shared).
+    const panelPage1 = await browser.newPage();
+    await panelPage1.goto(`chrome-extension://${extId}/panel/panel.html`, { waitUntil: 'load' });
+    await new Promise((r) => setTimeout(r, 800));
+    const panelAuthState = await panelPage1.evaluate(() => ({
+      authVisible: !document.getElementById('auth-view').classList.contains('hidden'),
+      productHidden: document.getElementById('main-content').classList.contains('hidden'),
+      tabs: document.querySelectorAll('#auth-tabs .auth-tab').length,
+      noCloseButton: !document.getElementById('btn-close'),
+    }));
+    check('panel shows sign-in screen when signed out; no overlay close button',
+      panelAuthState.authVisible && panelAuthState.productHidden && panelAuthState.tabs === 2 && panelAuthState.noCloseButton,
+      JSON.stringify(panelAuthState));
 
     // ACCEPTANCE ("@" bug): type test@example.com with the physical Shift+2
-    // keystroke into the email field inside the sidebar iframe.
-    let sf = null;
-    for (let i = 0; i < 30 && !sf; i++) {
-      sf = page.frames().find((f) => f.url().includes('/sidebar/sidebar.html'));
-      if (!sf) await new Promise((r) => setTimeout(r, 250));
-    }
-    check('sidebar iframe reachable for typing', Boolean(sf));
-    if (sf) {
-      await sf.waitForSelector('#auth-email', { timeout: 10000 }).catch(() => {});
-      await sf.focus('#auth-email');
-      await new Promise((r) => setTimeout(r, 250));
-      await page.keyboard.type('Test', { delay: 25 });
-      await page.keyboard.down('Shift');
-      await page.keyboard.press('Digit2'); // physical Shift+2 → '@'
-      await page.keyboard.up('Shift');
-      await page.keyboard.type('example.com', { delay: 25 });
-      await new Promise((r) => setTimeout(r, 250));
-      const typed = await sf.evaluate(() => document.getElementById('auth-email').value);
-      check('@ and full email typed into sidebar email field', typed === 'Test@example.com', `value=${JSON.stringify(typed)}`);
-      // Clear the field so later auth flow tests start clean.
-      await page.keyboard.press('End');
-      for (let i = 0; i < 20; i++) await page.keyboard.press('Backspace');
-      await new Promise((r) => setTimeout(r, 150));
-    }
-
-    // Persist open state across reload.
-    await page.reload({ waitUntil: 'load' });
-    await new Promise((r) => setTimeout(r, 900));
-    const openAfterReload = await hostOpen();
-    check('sidebar stays open after page reload (state preserved)', openAfterReload.present && openAfterReload.open);
-
-    // Esc closes it (Esc is handled inside the extension-origin iframe document;
-    // focus the sidebar first so the keystroke goes there).
-    sf = page.frames().find((f) => f.url().includes('/sidebar/sidebar.html'));
-    if (sf) {
-      await sf.focus('#auth-email').catch(() => {});
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    await page.keyboard.press('Escape');
-    await new Promise((r) => setTimeout(r, 500));
-    const afterEsc = await page.evaluate(() => {
-      const sidebar = document.querySelector('[data-patches="sidebar-host"]');
-      const launcher = document.querySelector('[data-patches="launcher-host"]');
-      const closed = !sidebar || /translateX\(101(?:px)?%\)/.test(sidebar.style.transform);
-      return {
-        closed,
-        launcherBack: launcher ? !launcher.classList.contains('hidden') : false,
-      };
-    });
-    check('Esc closes the sidebar and the launcher returns', afterEsc.closed && afterEsc.launcherBack, JSON.stringify(afterEsc));
+    // keystroke into the email field of the extension-origin panel document.
+    await panelPage1.focus('#auth-email');
+    await new Promise((r) => setTimeout(r, 250));
+    await panelPage1.keyboard.type('Test', { delay: 25 });
+    await panelPage1.keyboard.down('Shift');
+    await panelPage1.keyboard.press('Digit2'); // physical Shift+2 → '@'
+    await panelPage1.keyboard.up('Shift');
+    await panelPage1.keyboard.type('example.com', { delay: 25 });
+    await new Promise((r) => setTimeout(r, 250));
+    const typedPanel = await panelPage1.evaluate(() => document.getElementById('auth-email').value);
+    check('@ and full email typed into panel email field', typedPanel === 'Test@example.com', `value=${JSON.stringify(typedPanel)}`);
+    await panelPage1.close();
 
     // No duplicates when the fallback injection runs again.
     await swEval(async (tab) => {
       await chrome.scripting.executeScript({
         target: { tabId: tab },
-        files: ['content/patches-content.js', 'content/patchesSidebar.js'],
+        files: ['content/patches-content.js', 'content/launcher.js'],
       }).catch(() => {});
     }, TAB_ID);
     const dupCount = await page.evaluate(() => ({
       launchers: document.querySelectorAll('[data-patches="launcher-host"]').length,
       sidebars: document.querySelectorAll('[data-patches="sidebar-host"]').length,
     }));
-    check('no duplicate launcher/sidebar hosts after re-injection', dupCount.launchers === 1 && dupCount.sidebars === 1, JSON.stringify(dupCount));
+    check('no duplicate launcher hosts and no overlay sidebar after re-injection',
+      dupCount.launchers === 1 && dupCount.sidebars === 0, JSON.stringify(dupCount));
 
     // ── Auth gates (signed out) ────────────────────────────────────────────────
     const gateGen = await csMsg({ type: 'generate-patch', prompt: 'make it dark' });

@@ -1,20 +1,26 @@
-/* Patches popup — reuses the desktop app's design tokens (renderer/style.css):
-   dark neutral surfaces, subtle borders, #6e6af0 accent, same radii & type. */
+/* Patches popup — light sage-green brand theme. Design tokens identical to the
+   side panel (panel.css): Brilliance surfaces, sage-green accents, dark
+   neutral text; same radii & type. */
 
 :root {
-  --bg:          #0a0a0f;
-  --surface:     #111118;
-  --surface2:    #1a1a24;
-  --surface3:    #22222f;
-  --border:      rgba(255,255,255,0.07);
-  --border-hi:   rgba(255,255,255,0.14);
-  --text:        #e8e8f0;
-  --text-2:      #8888a0;
-  --text-3:      #55556a;
-  --accent:      #6e6af0;
-  --accent-dim:  rgba(110,106,240,0.15);
-  --success:     #34d399;
-  --danger:      #f87171;
+  --bg:          #FDFDFD;
+  --surface:     #FDFDFD;
+  --surface2:    #F2F6F2;
+  --surface3:    #D2E1D5;
+  --border:      rgba(157, 185, 160, 0.45);
+  --border-hi:   rgba(96, 132, 99, 0.45);
+  --text:        #253329;
+  --text-2:      #5A6B5E;
+  --text-3:      #87958B;
+  --accent:      #608463;
+  --accent-hover: #709674;
+  --accent-strong: #4E6F52; /* Clouded Pine darkened within hue — white-text AA contrast */
+  --accent-dim:  rgba(96, 132, 99, 0.14);
+  --success:     #3E7D4E;
+  --danger:      #C2483F;
+  --danger-dim:  rgba(194, 72, 63, 0.07);
+  --success-dim: rgba(62, 125, 78, 0.08);
+  --shadow-menu: 0 8px 24px rgba(37, 51, 41, 0.14);
   --radius:      10px;
   --radius-sm:   6px;
   --mono:        'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
@@ -106,11 +112,11 @@ button { font-family: inherit; }
 }
 #patch-toggle:checked + #patch-toggle-ui {
   background: var(--accent-dim);
-  border-color: var(--accent);
+  border-color: var(--accent-strong);
 }
 #patch-toggle:checked + #patch-toggle-ui::after {
   left: 15px;
-  background: var(--accent);
+  background: var(--accent-strong);
 }
 
 /* ── Main content ───────────────────────────────────────────────────────── */
@@ -148,15 +154,15 @@ button { font-family: inherit; }
 
 #btn-generate {
   width: 38px;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--accent-strong);
   border-radius: var(--radius-sm);
-  background: var(--accent);
+  background: var(--accent-strong);
   color: #fff;
   cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  transition: opacity .15s, transform .1s;
+  transition: background .15s, transform .1s;
 }
-#btn-generate:hover { opacity: .9; }
+#btn-generate:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 #btn-generate:active { transform: scale(.96); }
 #btn-generate:disabled { opacity: .35; cursor: default; }
 
@@ -194,13 +200,13 @@ button { font-family: inherit; }
   border: 1px solid var(--border);
 }
 #status.success {
-  background: rgba(52,211,153,0.08);
-  border: 1px solid rgba(52,211,153,0.25);
+  background: var(--success-dim);
+  border: 1px solid rgba(62,125,78,0.3);
   color: var(--success);
 }
 #status.error {
-  background: rgba(248,113,113,0.07);
-  border: 1px solid rgba(248,113,113,0.25);
+  background: var(--danger-dim);
+  border: 1px solid rgba(194,72,63,0.35);
   color: var(--danger);
 }
 
@@ -409,26 +415,26 @@ button { font-family: inherit; }
   background: none; border: none; cursor: pointer;
   color: var(--text-3); font-size: 10.5px; padding: 2px 4px;
 }
-.link-btn:hover { color: var(--accent); }
+.link-btn:hover { color: var(--accent-strong); }
 .link-btn-block { align-self: flex-end; margin-top: 4px; }
 #auth-error {
-  background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.25);
+  background: var(--danger-dim); border: 1px solid rgba(194,72,63,0.35);
   color: var(--danger); font-size: 11px; border-radius: var(--radius-sm);
   padding: 6px 9px; margin-bottom: 8px;
 }
 #auth-notice {
-  background: rgba(52,211,153,0.07); border: 1px solid rgba(52,211,153,0.25);
+  background: var(--success-dim); border: 1px solid rgba(62,125,78,0.35);
   color: var(--success); font-size: 11px; border-radius: var(--radius-sm);
   padding: 6px 9px; margin-bottom: 8px;
 }
 #auth-submit {
   width: 100%; height: 34px; margin-top: 10px;
-  background: var(--accent); color: #fff;
+  background: var(--accent-strong); color: #fff;
   border: none; border-radius: var(--radius-sm);
   font-size: 12px; font-weight: 600; cursor: pointer;
-  transition: opacity .15s;
+  transition: background .15s;
 }
-#auth-submit:hover { opacity: .92; }
+#auth-submit:hover { background: var(--accent-hover); }
 #auth-submit:disabled { opacity: .5; cursor: default; }
 .auth-footnote {
   margin-top: 10px; font-size: 9.5px; color: var(--text-3);
@@ -447,7 +453,7 @@ button { font-family: inherit; }
   border-radius: var(--radius-sm); color: var(--danger);
   font-size: 11px; padding: 5px 10px; cursor: pointer;
 }
-.text-danger-btn:hover { background: rgba(248,113,113,0.08); }
+.text-danger-btn:hover { background: var(--danger-dim); }
 .text-danger-btn:disabled { opacity: .4; cursor: default; background: none; }
 #launcher-group { padding: 10px 12px 12px; border-top: 1px solid var(--border); }
 .check-row {
@@ -541,11 +547,11 @@ button { font-family: inherit; }
   font-size: 11px;
   text-decoration: none;
 }
-#key-link:hover { color: var(--accent); }
+#key-link:hover { color: var(--accent-strong); }
 
 #btn-save-key {
   width: 100%;
-  background: var(--accent);
+  background: var(--accent-strong);
   color: #fff;
   border: none;
   border-radius: var(--radius-sm);
@@ -553,9 +559,9 @@ button { font-family: inherit; }
   font-weight: 600;
   padding: 8px 0;
   cursor: pointer;
-  transition: opacity .15s;
+  transition: background .15s;
 }
-#btn-save-key:hover { opacity: .9; }
+#btn-save-key:hover { background: var(--accent-hover); }
 #btn-save-key:disabled { opacity: .5; cursor: default; }
 
 #key-footnote {

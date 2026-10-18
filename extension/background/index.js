@@ -56,7 +56,9 @@ function isInjectableUrl(url) {
 }
 
 async function getActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  // Side panel pages have no window of their own; "lastFocusedWindow" resolves
+  // the web tab the user is actually on for both panel and popup callers.
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   return tab || null;
 }
 
@@ -132,6 +134,137 @@ async function sendToTab(tabId, message) {
   }
 }
 
+// ── Native side panel: launcher toggle + authoritative open state ──────────
+// Chrome exposes sidePanel.close() plus sidePanel.onOpened/onClosed events;
+// verified present on the local target (Chrome 155) and since ~Chrome 137.
+// The EVENTS are the source of truth — they fire for programmatic opens,
+// toolbar opens, and the user's manual ✕ close. Top-level registration lets
+// Chrome wake the worker for them, and the persisted copy (chrome.storage)
+// means a freshly restarted worker never toggles against a stale default.
+const PANEL_OPEN_KEY = 'panelOpen';
+
+async function persistPanelState(open, scope = {}) {
+  await chrome.storage.local.set({
+    [PANEL_OPEN_KEY]: {
+      open: !!open,
+      tabId: Number.isFinite(scope.tabId) ? scope.tabId : null,
+      windowId: Number.isFinite(scope.windowId) ? scope.windowId : null,
+      at: Date.now(),
+    },
+  });
+}
+
+async function getPanelOpenState() {
+  const stored = await chrome.storage.local.get(PANEL_OPEN_KEY);
+  const entry = stored[PANEL_OPEN_KEY];
+  return {
+    open: Boolean(entry && entry.open),
+    tabId: entry && Number.isFinite(entry.tabId) ? entry.tabId : null,
+    windowId: entry && Number.isFinite(entry.windowId) ? entry.windowId : null,
+    known: Boolean(entry),
+  };
+}
+
+// Feature-detected: newer Chrome only. On anything older the launcher keeps
+// the previous open-only behaviour (close() unavailable there anyway).
+if (chrome.sidePanel && chrome.sidePanel.onOpened && typeof chrome.sidePanel.onOpened.addListener === 'function') {
+  chrome.sidePanel.onOpened.addListener(async (info) => {
+    await persistPanelState(true, info || {});
+  });
+}
+if (chrome.sidePanel && chrome.sidePanel.onClosed && typeof chrome.sidePanel.onClosed.addListener === 'function') {
+  chrome.sidePanel.onClosed.addListener(async (info) => {
+    await persistPanelState(false, info || {});
+  });
+}
+
+/**
+ * Toggle the native side panel for the tab the launcher was clicked in.
+ * - Open → close({ scope }) → close() → optimistic storage write; the
+ *   onOpened/onClosed events are authoritative and correct any drift.
+ * - Manual ✕ close → onClosed → next click opens. Other open paths (toolbar
+ *   pinning, another open message) → onOpened keeps the state true.
+ * - Rapid repeated clicks simply alternate; each request reads fresh state.
+ */
+async function toggleSidePanel(message, sender) {
+  const { sidePanel } = chrome;
+  if (!sidePanel || typeof sidePanel.open !== 'function') {
+    return { ok: false, error: 'Chrome’s side panel API is unavailable in this browser.' };
+  }
+  const canClose = typeof sidePanel.close === 'function';
+
+  const senderTabId = sender && sender.tab && Number.isFinite(sender.tab.id) ? sender.tab.id : null;
+  const senderWindowId = sender && sender.tab && Number.isFinite(sender.tab.windowId) ? sender.tab.windowId : null;
+
+  // Resolve the open scope to this tab or, failing that, the focused window.
+  let openTabId = senderTabId;
+  let openWindowId = senderWindowId;
+  if (openTabId == null && openWindowId == null) {
+    try {
+      const win = await chrome.windows.getLastFocused();
+      openWindowId = win && win.id;
+    } catch { /* no focused window */ }
+  }
+  if (openTabId == null && openWindowId == null) {
+    return { ok: false, error: 'Could not determine the tab the click came from.' };
+  }
+
+  const state = await getPanelOpenState();
+  if (state.open && canClose) {
+    // Close using the scope the panel was actually opened with (it may differ
+    // from the current tab after navigation or manual Chrome-side changes).
+    // If every scope errors with "No active ... side panel", the tracked state
+    // was stale (Chrome had already closed it) — recover the state and fall
+    // through to the OPEN path so this click still does the user's bidding.
+    const scopes = [];
+    if (state.tabId != null) scopes.push({ tabId: state.tabId });
+    if (state.windowId != null) scopes.push({ windowId: state.windowId });
+    if (openTabId != null && openTabId !== state.tabId) scopes.push({ tabId: openTabId });
+    if (openWindowId != null && openWindowId !== state.windowId) scopes.push({ windowId: openWindowId });
+
+    let gestureRequired = false;
+    let noPanelFound = false;
+    let lastError = null;
+    for (const scope of scopes) {
+      try {
+        await sidePanel.close(scope);
+        // Optimistic write for environments where the events are not
+        // dispatched; on closed-capable Chrome the onClosed event also fires.
+        await persistPanelState(false, scope);
+        return { ok: true, action: 'closed' };
+      } catch (err) {
+        lastError = String((err && err.message) || err);
+        if (/gesture/i.test(lastError)) { gestureRequired = true; break; }
+        if (/no active/i.test(lastError)) { noPanelFound = true; }
+        // Otherwise (unknown tab removed, window gone) — keep trying scopes.
+      }
+    }
+    if (gestureRequired) return { ok: false, gestureRequired: true, error: lastError };
+    // Stale-state recovery: Chrome reports no active panel for the known
+    // scopes (the tracked close state was stale — e.g. Chrome already closed
+    // it, or the panel was closed through Chrome's own UI without the events
+    // reaching us). Persist the corrected state and try to open instead —
+    // this click still does the user's bidding.
+    await persistPanelState(false, { tabId: state.tabId, windowId: state.windowId });
+    // fall through to the open path below
+  }
+
+  try {
+    if (openTabId != null) await sidePanel.open({ tabId: openTabId });
+    else await sidePanel.open({ windowId: openWindowId });
+    await persistPanelState(true, { tabId: openTabId, windowId: openWindowId });
+    return { ok: true, action: 'opened' };
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    if (/gesture/i.test(msg)) {
+      // Programmatic calls without a pointer/keyboard gesture are rejected —
+      // the real launcher click always carries one, so this is test/tooling noise.
+      return { ok: false, gestureRequired: true, error: msg };
+    }
+    return { ok: false, error: msg };
+  }
+}
+
 async function ensureContentScript(tab) {
   if (!tab || typeof tab.id !== 'number' || !tabInfo(tab).injectable) return false;
   const ping = await sendToTab(tab.id, { type: 'patches-ping' });
@@ -139,7 +272,7 @@ async function ensureContentScript(tab) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: ['content/patches-content.js', 'content/patchesSidebar.js'],
+      files: ['content/patches-content.js', 'content/launcher.js'],
     });
     return true;
   } catch {
@@ -201,7 +334,7 @@ async function requireAuth() {
     return {
       ok: false,
       authRequired: true,
-      error: 'Sign in to use Patches. Open the sidebar or popup to sign in or create an account.',
+      error: 'Sign in to use Patches. Open the side panel or popup to sign in or create an account.',
     };
   }
   return null;
@@ -209,16 +342,16 @@ async function requireAuth() {
 
 // ── Message router ───────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Messages from the offscreen auth document (auth-state broadcasts) and the
-  // sidebar iframe's readiness ping. Unknown types within this targeted
-  // namespace must FAIL loudly — silently ACKing them masks lost writes.
+  // Messages from the side panel page, the offscreen auth document (auth-state
+  // broadcasts), and test hooks. Unknown types within this targeted namespace
+  // must FAIL loudly — silently ACKing them masks lost writes.
   if (message && message.target === 'background') {
     (async () => {
       if (message.type === 'auth-state-changed') {
         await setAuthCache(message);
         if (message.signedIn) await syncCloudIntoLocal();
         sendResponse({ ok: true });
-      } else if (message.type === 'sidebar-view-ready') {
+      } else if (message.type === 'panel-view-ready') {
         sendResponse({ ok: true });
       } else {
         sendResponse({ ok: false, error: `Invalid internal message: ${message.type}` });
@@ -254,7 +387,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true; // async sendResponse
 });
 
-async function handleMessage(message) {
+// ── Native side panel (opens on launcher click; user gesture required) ──────
+async function handleMessage(message, sender) {
   const type = message && message.type;
   switch (type) {
     // ── Auth (relayed to the offscreen Firebase document) ─────────────────────
@@ -304,6 +438,10 @@ async function handleMessage(message) {
       return sendToOffscreen({ type: 'auth-send-reset', email: message.email });
 
     // ── Tabs / page state ─────────────────────────────────────────────────────
+    case 'toggle-side-panel':
+    case 'open-side-panel': // legacy alias for seamless settings sync
+      return toggleSidePanel(message, sender);
+
     case 'get-tab-info': {
       const tab = await getActiveTab();
       return { ok: true, ...tabInfo(tab) };
@@ -372,7 +510,6 @@ async function handleMessage(message) {
           model: settings.model || DEFAULT_MODEL,
           supportedModels: SUPPORTED_MODELS,
           patchesEnabled: settings.patchesEnabled !== false,
-          launcherEnabled: settings.launcherEnabled !== false,
         },
       };
     }
@@ -392,12 +529,6 @@ async function handleMessage(message) {
       if (!SUPPORTED_MODELS.includes(model)) return { ok: false, error: 'Unsupported model.' };
       await saveSettings({ model });
       return { ok: true, model };
-    }
-
-    case 'set-launcher-enabled': {
-      await saveSettings({ launcherEnabled: !!message.enabled });
-      await revealLauncherOnAllTabs();
-      return { ok: true, enabled: !!message.enabled };
     }
 
     default:
@@ -537,23 +668,20 @@ async function refreshAllPatches() {
   });
 }
 
-async function revealLauncherOnAllTabs() {
-  const settings = await getSettings();
-  await forEachWebTab(async (tab) => {
-    await sendToTab(tab.id, {
-      type: 'patches-ui',
-      launcherEnabled: settings.launcherEnabled !== false,
-    });
-  });
-}
-
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(async () => {
   const settings = await getSettings();
-  // Seed defaults without clobbering existing user data on update.
+  // Seed default settings without clobbering existing user data on update.
   await saveSettings({
     patchesEnabled: settings.patchesEnabled !== undefined ? settings.patchesEnabled : DEFAULT_SETTINGS.patchesEnabled,
   });
+  // The "Show floating launcher" setting was removed — drop the stale
+  // preference so old data cannot disagree with the always-visible launcher.
+  if ('launcherEnabled' in settings) {
+    const rest = { ...settings };
+    delete rest.launcherEnabled;
+    await chrome.storage.local.set({ settings: rest });
+  }
   // Warm the auth document so sign-in state appears before first interaction.
   await ensureOffscreenDocument();
   await syncCloudIntoLocal();
